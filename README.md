@@ -8,7 +8,8 @@ Aplicación de escritorio (Rust + GPUI) que procesa un archivo ZIP con CFDI en X
 
 | Capa               | Tecnología                                                                     |
 | ------------------ | ------------------------------------------------------------------------------ |
-| UI                 | `gpuikit` 0.9.0 sobre `gpui-unofficial` 1.14.2                                 |
+| UI                 | Spike de migración: `ely-gpui-component` + `gpui-pre` 0.3.10                   |
+| Rust mínimo        | 1.98                                                                           |
 | ZIP                | `zip`                                                                          |
 | XML con namespaces | `quick-xml` (`NsReader`)                                                       |
 | Excel              | `rust_xlsxwriter`                                                              |
@@ -84,38 +85,21 @@ src/
 │   ├── zip_reader.rs
 │   ├── xml_parser.rs  # quick-xml + namespaces
 │   └── xlsx_exporter.rs
-└── ui/                # GPUI (vistas, estado, tabla de vista previa)
+└── ui/                # Reservado para la nueva UI Ely
+old_ui/                 # UI GPUKit anterior, preservada fuera del build
 tests/
 ├── parser.rs
 ├── use_cases.rs
 └── fixtures/          # XML 3.3/4.0, IVA tasa 0, tipos, corruptos y namespaces
 ```
 
-La UI nunca parsea ni escribe archivos directamente: llama a los casos de uso. El procesamiento corre fuera del hilo de UI y reporta progreso.
+La UI nunca parsea ni escribe archivos directamente: llama a los casos de uso. El procesamiento corre fuera del hilo de UI y reporta progreso. La interfaz previa se conserva en `old_ui/` como referencia funcional, pero no se compila.
 
 ## Interfaz de escritorio
 
-La ventana abre a 1200 × 760 px y admite un mínimo de 900 × 560 px. La interfaz usa componentes de GPUKit para botones, campo de texto, pestañas, métricas, tarjetas, badges, progreso, notificaciones, tipografía y layout. La apariencia del sistema selecciona entre los temas claro y oscuro Gruvbox incluidos en GPUKit.
+La ventana Ely abre a 1200 × 760 px y admite un mínimo de 900 × 560 px. La pantalla base permite seleccionar o soltar un ZIP, indicar opcionalmente el RFC propio, procesar en segundo plano, consultar métricas y exportar el Excel. El tema claro/oscuro sigue la apariencia del sistema o el valor configurado. La vista previa tabular y la pantalla de Configuración siguen pendientes en las siguientes partes de la migración.
 
-Selecciona un ZIP con el área de carga o arrástralo a la ventana. Añade un RFC propio opcional y pulsa **Procesar**. El progreso se actualiza sin bloquear la ventana.
-
-Las vistas previas cuentan con:
-
-- **Búsqueda global** por texto y botón para limpiar la búsqueda.
-- **Ordenamiento** ascendente y descendente al pulsar un encabezado; `Mayús + clic` añade criterios de orden.
-- **Columnas configurables**: arrastra el borde del encabezado para cambiar su ancho; desde **Columnas** se pueden ocultar, reordenar y restaurar.
-- **Selección y copia**: clic, `Ctrl/Cmd + clic` y `Mayús + clic` seleccionan filas; `Ctrl/Cmd + C` copia la selección como TSV para pegar en Excel. El botón **Copiar** copia la selección o, si no hay selección, todas las filas visibles.
-- **Totales de importe** en el pie cuando la tabla tiene columnas sumables; si hay filas seleccionadas, el total corresponde a esa selección.
-- **Desplazamiento horizontal** con trackpad o los botones **Inicio**, **Anterior**, **Siguiente** y **Final**. El scroll vertical permanece en las filas.
-- **Virtualización vertical** mediante `uniform_list` y celdas preformateadas en `SharedString`, evitando recrear los datos al renderizar.
-
-Atajos:
-
-- `Ctrl/Cmd+O`: seleccionar un ZIP.
-- `Ctrl/Cmd+E`: exportar el Excel.
-- `Ctrl/Cmd+1` a `Ctrl/Cmd+4`: cambiar de pestaña.
-
-El selector nativo de GPUI no expone filtros de extensión en `PathPromptOptions`. Permite elegir archivos y la aplicación valida `.zip` después de la selección. Al guardar, la aplicación añade `.xlsx` si falta. Tras exportar, **Abrir carpeta** revela el archivo en el explorador del sistema.
+La UI GPUKit anterior, con el flujo de procesamiento CFDI, selección de archivos, exportación y tabla de vista previa, queda preservada en `old_ui/` para orientar las siguientes partes de la migración.
 
 Para generar un ZIP de carga con 5,000 CFDI sintéticos basados en el fixture:
 

@@ -2,15 +2,16 @@
 name = "cfdi-zip-processor"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.98"
 
 [dependencies]
 anyhow = "1.0.104"
 async-channel = "2.5.0"
 chrono = "0.4.45"
 directories = "6.0.0"
-gpui = { version = "=1.14.2", package = "gpui-unofficial" }
-gpui_platform = { version = "=1.14.2", package = "gpui-platform-gpui-unofficial", features = ["font-kit"] }
-gpuikit = "=0.9.0"
+ely-gpui-component = { git = "https://github.com/ELY-Open-Source/Ely-GPUI-Components", rev = "89bff04957fde8bec63529bea0efe90f2a183159", default-features = false, features = ["fonts"] }
+gpui = { package = "gpui-pre", version = "=0.3.10" }
+gpui_platform = { package = "gpui-pre-platform", version = "=0.3.10", features = ["font-kit"] }
 quick-xml = "0.42.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
@@ -20,6 +21,9 @@ rust_xlsxwriter = { version = "0.102.0", features = ["rust_decimal"] }
 thiserror = "2.0.21"
 unicode-normalization = "0.1.26"
 zip = "9.2.2"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+gpui_platform = { package = "gpui-pre-platform", version = "=0.3.10", features = ["wayland", "x11"] }
 
 [dev-dependencies]
 calamine = "0.38.0"
