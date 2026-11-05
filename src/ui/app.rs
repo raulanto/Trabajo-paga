@@ -2059,6 +2059,49 @@ impl AppView {
         } else {
             None
         };
+        let scroll_guidance = div()
+            .flex()
+            .items_center()
+            .justify_end()
+            .gap_6()
+            .px_3()
+            .py_1()
+            .text_size(rems(0.75))
+            .text_color(theme.colors.fg_muted)
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child("Columnas")
+                    .child("←")
+                    .child(
+                        div()
+                            .w(rems(3.))
+                            .h(rems(0.5))
+                            .border_t_1()
+                            .border_color(theme.colors.border),
+                    )
+                    .child("→")
+                    .child("Shift+rueda"),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child("Filas")
+                    .child("↑")
+                    .child(
+                        div()
+                            .w(rems(0.5))
+                            .h(rems(1.))
+                            .border_l_1()
+                            .border_color(theme.colors.border),
+                    )
+                    .child("↓")
+                    .child("Rueda"),
+            );
         let footer = div()
             .flex()
             .items_center()
@@ -2087,13 +2130,11 @@ impl AppView {
                     .flex()
                     .flex_col()
                     .items_end()
-                    .text_ellipsis()
+                    .text_ellipsis(                    )
                     .child(
                         "Ordenar: clic en encabezado · Reordenar: arrastra encabezado · Ancho: arrastra borde",
                     )
-                    .child(
-                        "Desplazar: rueda o Shift+rueda · Copiar TSV: filas seleccionadas o pestaña completa",
-                ),
+                    .child("Copiar TSV: filas seleccionadas o pestaña completa"),
             );
         let panel = div()
             .flex()
@@ -2103,6 +2144,7 @@ impl AppView {
             .child(search_toolbar)
             .children(filter_panel)
             .child(div().flex_1().min_h_0().child(table_body))
+            .child(scroll_guidance)
             .child(footer);
 
         let choices = [
@@ -2165,7 +2207,7 @@ impl AppView {
             .gap_2()
             .child(self.render_metrics(cx))
             .child(div().flex().justify_end().child(copy_button))
-            .child(div().flex_1().min_h_0().child(tabs))
+            .child(div().flex().flex_1().min_h_0().child(tabs))
             .into_any_element()
     }
 
