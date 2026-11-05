@@ -97,7 +97,9 @@ La UI nunca parsea ni escribe archivos directamente: llama a los casos de uso. E
 
 ## Interfaz de escritorio
 
-La ventana Ely abre a 1200 × 760 px y admite un mínimo de 900 × 560 px. La pantalla base permite seleccionar o soltar un ZIP, indicar opcionalmente el RFC propio, procesar en segundo plano, consultar métricas y exportar el Excel. El tema claro/oscuro sigue la apariencia del sistema o el valor configurado. La vista previa tabular y la pantalla de Configuración siguen pendientes en las siguientes partes de la migración.
+La ventana Ely abre a 1200 × 760 px y admite un mínimo de 900 × 560 px. La pantalla permite seleccionar o soltar un ZIP, indicar opcionalmente el RFC propio, procesar en segundo plano, consultar métricas y exportar el Excel. El tema claro/oscuro sigue la apariencia del sistema o el valor configurado. Los resultados se muestran en cuatro pestañas con contadores y tablas virtualizadas: CFDI (21 columnas), Resumen por producto (4), Clasificación sugerida (7) y Errores (2). Cada tabla permite buscar y filtrar filas, ordenar y seleccionar, redimensionar y reordenar columnas, desplazarse en ambos ejes y copiar datos como TSV. Los montos se conservan como texto decimal; el único total de vista previa es Importe a nivel concepto.
+
+La pantalla de Configuración sigue pendiente en las siguientes partes de la migración.
 
 La UI GPUKit anterior, con el flujo de procesamiento CFDI, selección de archivos, exportación y tabla de vista previa, queda preservada en `old_ui/` para orientar las siguientes partes de la migración.
 
@@ -108,7 +110,7 @@ python3 tools/generate_load_test_zip.py /tmp/cfdi_5000.zip --count 5000
 cargo run
 ```
 
-Abre `/tmp/cfdi_5000.zip`, pulsa **Procesar** y verifica que la ventana siga respondiendo mientras avanza la barra de progreso y que las tablas se desplacen suavemente de manera vertical y horizontal.
+Abre `/tmp/cfdi_5000.zip`, pulsa **Procesar** y verifica que la ventana siga respondiendo mientras avanza la barra de progreso y que las tablas virtualizadas se desplacen de manera vertical y horizontal.
 
 La prueba automatizada `cargo test procesar_zip_procesa_5000_xml_sin_perder_filas` verifica que el caso de uso procese 5,000 XML y conserve todas sus filas.
 

@@ -30,6 +30,8 @@ Los ejemplos son fragmentos dentro de una vista GPUI. `ely_gpui_component` es el
 
 `tables::Cell::Number` recibe `f64`. No pasarle importes `rust_decimal` convertidos a `f64`: se pierde la garantía de precisión exigida por esta app. `Cell::Text(decimal.to_string())` conserva la representación decimal para mostrarla, pero no equivale a una celda numérica con orden y agregación decimal exactos. La ordenación numérica monetaria requeriría resolver ese límite antes de migrar la tabla.
 
+Para las tablas de resultados se usa `DataTable`: ofrece virtualización, búsqueda (`query`), filtros (`filters`), orden, selección, ancho/alineación por columna y redimensionado/reordenado. La UI presenta búsqueda y filtros en español. No incorpora una acción de copiado TSV; la UI la agrega por separado. Los importes se dibujan como texto alineado a la derecha y no se ordenan numéricamente para evitar convertir `Decimal` a `f64`; el total de `Importe` se calcula con `rust_decimal`. No se copia `old_ui/table_model.rs`: Ely ya proporciona búsqueda, filtros, orden, selección y comportamiento de columnas, por lo que duplicar ese modelo replicaría estado retenido. La UI conserva solo la preparación de filas, el conteo visible para búsqueda/filtros, la suma decimal y la conversión TSV.
+
 ## Integraciones de plataforma
 
 ### Arrastrar y soltar archivos

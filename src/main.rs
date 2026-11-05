@@ -2,7 +2,7 @@ use cfdi_zip_processor::ui::{
     AppView,
     dimensions::{WINDOW_HEIGHT, WINDOW_MIN_HEIGHT, WINDOW_MIN_WIDTH, WINDOW_WIDTH},
 };
-use ely_gpui_component::Assets;
+use ely_gpui_component::{Assets, i18n::I18n};
 use gpui::{App, AppContext, Bounds, TitlebarOptions, WindowBounds, WindowOptions, px, size};
 
 fn main() {
@@ -14,6 +14,7 @@ fn main() {
                 cx.quit();
                 return;
             }
+            cx.set_global(I18n::new("es-ES"));
 
             let bounds = Bounds::centered(None, size(px(WINDOW_WIDTH), px(WINDOW_HEIGHT)), cx);
             let result = cx.open_window(

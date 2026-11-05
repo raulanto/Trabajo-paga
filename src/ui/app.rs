@@ -1,5 +1,6 @@
 use std::{
     path::{Path, PathBuf},
+    rc::Rc,
     time::{Duration, Instant},
 };
 
@@ -8,14 +9,17 @@ use ely_gpui_component::{
     buttons::Button,
     data_display::{Badge, Tone},
     feedback::{Toast, ToastViewport, Toaster},
-    forms::{Input, InputEvent, TextInput},
+    forms::{Choice, Input, InputEvent, TextInput},
     motion::ProgressBar,
+    navigation::Tabs,
     primitives::Severity,
+    tables::{DataTable, FilterBuilder, FilterRule},
     theme::{ActiveTheme, Mode, Radius, Theme},
 };
 use gpui::{
-    Context, Entity, ExternalPaths, FontWeight, IntoElement, KeyDownEvent, ParentElement,
-    PathPromptOptions, Render, SharedString, Styled, Subscription, Window, div, prelude::*, rems,
+    ClipboardItem, Context, Entity, ExternalPaths, FontWeight, IntoElement, KeyDownEvent,
+    ParentElement, PathPromptOptions, Render, SharedString, Styled, Subscription, Window, div,
+    prelude::*, rems,
 };
 
 use crate::{
@@ -34,6 +38,10 @@ use crate::{
 use super::{
     rfc::{aviso_rfc, normalizar_rfc},
     state::AppState,
+    table_data::{
+        self, CFDI_COLUMNS, CFDI_HEADERS, CLASIFICACION_COLUMNS, CLASIFICACION_HEADERS,
+        ERROR_COLUMNS, ERROR_HEADERS, ImporteTotal, RESUMEN_COLUMNS, RESUMEN_HEADERS, UiTables,
+    },
 };
 
 const APP_CONTEXT: &str = "CfdiZipProcessor";
@@ -47,6 +55,7 @@ enum WorkerMessage {
     Complete {
         solicitud: u64,
         resultado: ResultadoProceso,
+        tablas: Box<table_data::PreparedTables>,
     },
 }
 
@@ -54,8 +63,16 @@ pub struct AppView {
     state: AppState,
     rfc_input: Entity<TextInput>,
     toaster: Entity<Toaster>,
+    tablas: Option<UiTables>,
+    active_tab: usize,
+    selected_rows: [Vec<SharedString>; 4],
+    table_search: [Entity<TextInput>; 4],
+    filter_rules: [Vec<FilterRule>; 4],
+    filter_any: [bool; 4],
+    filter_panel_open: bool,
     next_request: u64,
     _rfc_subscription: Subscription,
+    _table_search_subscriptions: [Subscription; 4],
     _appearance_subscription: Subscription,
 }
 
@@ -83,6 +100,21 @@ impl AppView {
         });
         rfc_input.update(cx, |input, cx| input.set_text(rfc, cx));
 
+        let table_search = std::array::from_fn(|_| {
+            cx.new(|cx| {
+                TextInput::new(window, cx)
+                    .label("Buscar")
+                    .placeholder("Buscar en esta tabla")
+            })
+        });
+        let table_search_subscriptions = std::array::from_fn(|index| {
+            cx.subscribe(&table_search[index], |_, _, event: &InputEvent, cx| {
+                if *event == InputEvent::Changed {
+                    cx.notify();
+                }
+            })
+        });
+
         let rfc_subscription = cx.subscribe(&rfc_input, |_, input, event: &InputEvent, cx| {
             if *event != InputEvent::Changed {
                 return;
@@ -108,8 +140,16 @@ impl AppView {
             state: AppState::default(),
             rfc_input,
             toaster: cx.new(|_| Toaster::default()),
+            tablas: None,
+            active_tab: 0,
+            selected_rows: std::array::from_fn(|_| Vec::new()),
+            table_search,
+            filter_rules: std::array::from_fn(|_| Vec::new()),
+            filter_any: [false; 4],
+            filter_panel_open: false,
             next_request: 0,
             _rfc_subscription: rfc_subscription,
+            _table_search_subscriptions: table_search_subscriptions,
             _appearance_subscription: appearance_subscription,
         }
     }
@@ -147,6 +187,15 @@ impl AppView {
     }
 
     fn cargar_zip(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        self.tablas = None;
+        self.active_tab = 0;
+        self.selected_rows = std::array::from_fn(|_| Vec::new());
+        self.filter_rules = std::array::from_fn(|_| Vec::new());
+        self.filter_any = [false; 4];
+        self.filter_panel_open = false;
+        for search in &self.table_search {
+            search.update(cx, |input, cx| input.set_text("", cx));
+        }
         if !es_zip(&path) {
             self.state
                 .fallar_con_ruta(Some(path), "Selecciona un archivo con extensión .zip.");
@@ -190,9 +239,11 @@ impl AppView {
                         });
                     }
                 });
+                let tablas = table_data::PreparedTables::from_result(&resultado);
                 let _ = sender.send_blocking(WorkerMessage::Complete {
                     solicitud,
                     resultado,
+                    tablas: Box::new(tablas),
                 });
             })
             .detach();
@@ -226,13 +277,16 @@ impl AppView {
             WorkerMessage::Complete {
                 solicitud,
                 resultado,
+                tablas,
             } => {
-                if self.state.terminar_proceso(solicitud, resultado)
-                    && let AppState::Error { mensaje, .. } = &self.state
-                {
-                    self.toast(mensaje.clone(), Severity::Danger, cx);
-                    cx.notify();
-                } else {
+                if self.state.terminar_proceso(solicitud, resultado) {
+                    if self.state.tiene_resultados() {
+                        self.tablas = Some((*tablas).into_ui());
+                        self.active_tab = 0;
+                        self.selected_rows = std::array::from_fn(|_| Vec::new());
+                    } else if let AppState::Error { mensaje, .. } = &self.state {
+                        self.toast(mensaje.clone(), Severity::Danger, cx);
+                    }
                     cx.notify();
                 }
             }
@@ -680,6 +734,273 @@ impl AppView {
             .into_any_element()
     }
 
+    fn render_results(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let Some(tables) = &self.tablas else {
+            return div().into_any_element();
+        };
+        let theme = cx.theme();
+        let (table, columns, table_id) = match self.active_tab {
+            1 => (&tables.resumen, &RESUMEN_COLUMNS[..], "result-resumen"),
+            2 => (
+                &tables.clasificacion,
+                &CLASIFICACION_COLUMNS[..],
+                "result-clasificacion",
+            ),
+            3 => (&tables.errores, &ERROR_COLUMNS[..], "result-errores"),
+            _ => (&tables.cfdi, &CFDI_COLUMNS[..], "result-cfdi"),
+        };
+        let row_count = table.rows.len();
+        let search = self.table_search[self.active_tab]
+            .read(cx)
+            .text()
+            .to_owned();
+        let filters = self.filter_rules[self.active_tab].clone();
+        let filter_any = self.filter_any[self.active_tab];
+        let visible_count = table.visible_count(&search, columns, &filters, filter_any);
+        let selection = self.selected_rows[self.active_tab].clone();
+        let weak_view = cx.weak_entity();
+        let selection_tab = self.active_tab;
+
+        let table_body = if visible_count == 0 {
+            let empty_text = if row_count == 0 && self.active_tab == 3 {
+                "No se registraron errores en este ZIP"
+            } else if row_count > 0 {
+                "Ninguna fila coincide con la búsqueda y los filtros."
+            } else {
+                "Sin filas para mostrar"
+            };
+            div()
+                .flex()
+                .flex_1()
+                .min_h_0()
+                .items_center()
+                .justify_center()
+                .text_color(cx.theme().colors.fg_muted)
+                .child(empty_text)
+                .into_any_element()
+        } else {
+            DataTable::new(table_id, table_data::columns(columns))
+                .rows(Rc::clone(&table.rows))
+                .query(search)
+                .filters(filters, filter_any)
+                .selected(selection)
+                .on_select(move |keys, _, cx| {
+                    let keys = keys.to_vec();
+                    if let Err(error) = weak_view.update(cx, |view, cx| {
+                        view.selected_rows[selection_tab] = keys;
+                        cx.notify();
+                    }) {
+                        eprintln!("No se pudo actualizar la selección de la tabla: {error}");
+                    }
+                })
+                .virtualized()
+                .size_full()
+                .into_any_element()
+        };
+        let search_field = div()
+            .w(rems(24.))
+            .child(Input::new(&self.table_search[self.active_tab]));
+        let filter_count = self.filter_rules[self.active_tab]
+            .iter()
+            .filter(|rule| {
+                rule.test == ely_gpui_component::tables::Test::Empty
+                    || !rule.value.trim().is_empty()
+            })
+            .count();
+        let filter_label = if filter_count == 0 {
+            "Filtros…".to_owned()
+        } else {
+            format!("Filtros ({filter_count})")
+        };
+        let filter_button =
+            Button::new("table-filters", filter_label).on_click(cx.listener(|view, _, _, cx| {
+                view.filter_panel_open = !view.filter_panel_open;
+                cx.notify();
+            }));
+        let search_toolbar = div()
+            .flex()
+            .items_end()
+            .justify_between()
+            .gap_3()
+            .px_3()
+            .py_2()
+            .child(search_field)
+            .child(filter_button);
+        let filter_panel = if self.filter_panel_open {
+            let active_tab = self.active_tab;
+            let rules = self.filter_rules[active_tab].clone();
+            let any = self.filter_any[active_tab];
+            let weak_view = cx.weak_entity();
+            Some(
+                div()
+                    .px_3()
+                    .py_2()
+                    .border_b_1()
+                    .border_color(theme.colors.border)
+                    .child(
+                        FilterBuilder::new(
+                            ("result-filter-builder", active_tab),
+                            columns.iter().map(|column| (column.key, column.title)),
+                        )
+                        .rules(rules, any)
+                        .on_change(move |rules, any, _, cx| {
+                            let rules = rules.to_vec();
+                            if let Err(error) = weak_view.update(cx, |view, cx| {
+                                view.filter_rules[active_tab] = rules;
+                                view.filter_any[active_tab] = any;
+                                cx.notify();
+                            }) {
+                                eprintln!("No se pudieron actualizar los filtros: {error}");
+                            }
+                        }),
+                    ),
+            )
+        } else {
+            None
+        };
+
+        let total_importe = if self.active_tab == 0 {
+            match &tables.importe_total {
+                ImporteTotal::SinDatos => None,
+                ImporteTotal::Etiqueta(label) => Some(label.clone()),
+            }
+        } else {
+            None
+        };
+        let footer = div()
+            .flex()
+            .items_center()
+            .justify_between()
+            .gap_3()
+            .px_3()
+            .py_2()
+            .border_t_1()
+            .border_color(theme.colors.border)
+            .text_size(rems(0.75))
+            .text_color(theme.colors.fg_muted)
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_3()
+                    .child(format!(
+                        "{} filas · {} columnas",
+                        format_integer(visible_count),
+                        format_integer(columns.len())
+                    ))
+                    .when_some(total_importe, |row, total| row.child(total)),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .items_end()
+                    .text_ellipsis()
+                    .child(
+                        "Ordenar: clic en encabezado · Reordenar: arrastra encabezado · Ancho: arrastra borde",
+                    )
+                    .child(
+                        "Desplazar: rueda o Shift+rueda · Copiar TSV: filas seleccionadas o pestaña completa",
+                ),
+            );
+        let panel = div()
+            .flex()
+            .flex_col()
+            .size_full()
+            .min_h_0()
+            .child(search_toolbar)
+            .children(filter_panel)
+            .child(div().flex_1().min_h_0().child(table_body))
+            .child(footer);
+
+        let choices = [
+            Choice::new(
+                "cfdi",
+                format!("CFDI ({})", format_integer(tables.cfdi.rows.len())),
+            ),
+            Choice::new(
+                "resumen",
+                format!(
+                    "Resumen por producto ({})",
+                    format_integer(tables.resumen.rows.len())
+                ),
+            ),
+            Choice::new(
+                "clasificacion",
+                format!(
+                    "Clasificación sugerida ({})",
+                    format_integer(tables.clasificacion.rows.len())
+                ),
+            ),
+            Choice::new(
+                "errores",
+                format!("Errores ({})", format_integer(tables.errores.rows.len())),
+            ),
+        ];
+        let selected_id = match self.active_tab {
+            1 => "resumen",
+            2 => "clasificacion",
+            3 => "errores",
+            _ => "cfdi",
+        };
+        let weak_view = cx.weak_entity();
+        let tabs = Tabs::new("result-tabs", choices, selected_id)
+            .panel(panel)
+            .on_change(move |value, _, cx| {
+                let tab = match value.as_ref() {
+                    "resumen" => 1,
+                    "clasificacion" => 2,
+                    "errores" => 3,
+                    _ => 0,
+                };
+                if let Err(error) = weak_view.update(cx, |view, cx| {
+                    view.active_tab = tab;
+                    cx.notify();
+                }) {
+                    eprintln!("No se pudo cambiar la pestaña de resultados: {error}");
+                }
+            });
+        let copy_button = ely_gpui_component::buttons::Button::new("copy-tsv", "Copiar TSV")
+            .disabled(row_count == 0)
+            .on_click(cx.listener(|view, _, _, cx| view.copiar_tabla(cx)));
+
+        div()
+            .flex()
+            .flex_col()
+            .flex_1()
+            .min_h_0()
+            .w_full()
+            .gap_2()
+            .child(self.render_metrics(cx))
+            .child(div().flex().justify_end().child(copy_button))
+            .child(div().flex_1().min_h_0().child(tabs))
+            .into_any_element()
+    }
+
+    fn copiar_tabla(&mut self, cx: &mut Context<Self>) {
+        let Some(tables) = &self.tablas else {
+            return;
+        };
+        let (table, headers) = match self.active_tab {
+            1 => (&tables.resumen, &RESUMEN_HEADERS[..]),
+            2 => (&tables.clasificacion, &CLASIFICACION_HEADERS[..]),
+            3 => (&tables.errores, &ERROR_HEADERS[..]),
+            _ => (&tables.cfdi, &CFDI_HEADERS[..]),
+        };
+        let tsv = table.to_tsv(headers, &self.selected_rows[self.active_tab]);
+        let rows = if self.selected_rows[self.active_tab].is_empty() {
+            table.rows.len()
+        } else {
+            self.selected_rows[self.active_tab].len()
+        };
+        cx.write_to_clipboard(ClipboardItem::new_string(tsv));
+        self.toast(
+            format!("{} filas copiadas como TSV.", format_integer(rows)),
+            Severity::Success,
+            cx,
+        );
+    }
+
     fn render_status_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
         let path = self
@@ -753,6 +1074,22 @@ impl AppView {
         match event.keystroke.key.to_ascii_lowercase().as_str() {
             "o" => self.open_zip_dialog(cx),
             "e" if self.state.tiene_resultados() => self.elegir_destino_excel(cx),
+            "1" if self.state.tiene_resultados() => {
+                self.active_tab = 0;
+                cx.notify();
+            }
+            "2" if self.state.tiene_resultados() => {
+                self.active_tab = 1;
+                cx.notify();
+            }
+            "3" if self.state.tiene_resultados() => {
+                self.active_tab = 2;
+                cx.notify();
+            }
+            "4" if self.state.tiene_resultados() => {
+                self.active_tab = 3;
+                cx.notify();
+            }
             _ => (),
         }
     }
@@ -773,7 +1110,15 @@ impl Render for AppView {
             .text_color(theme.colors.fg)
             .child(self.render_toolbar(cx))
             .child(self.render_options(cx))
-            .child(
+            .child(if self.state.tiene_resultados() {
+                div()
+                    .flex()
+                    .flex_1()
+                    .min_h_0()
+                    .p_4()
+                    .child(self.render_results(cx))
+                    .into_any_element()
+            } else {
                 div()
                     .flex()
                     .flex_col()
@@ -785,8 +1130,8 @@ impl Render for AppView {
                     .p_5()
                     .child(self.render_load_area(cx))
                     .child(self.render_progress())
-                    .child(self.render_metrics(cx)),
-            )
+                    .into_any_element()
+            })
             .child(self.render_status_bar(cx))
             .child(ToastViewport::new("app-toasts", &self.toaster))
     }
