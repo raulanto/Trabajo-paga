@@ -10,6 +10,7 @@ use cfdi_zip_processor::{
     domain::{
         cfdi::CfdiRow,
         clasificacion::{Categoria, Clasificacion, clasificar},
+        config::AppConfig,
     },
     infrastructure::{
         xlsx_exporter::XlsxExporter, xml_parser::XmlCfdiParser, zip_reader::ZipXmlReader,
@@ -335,6 +336,36 @@ fn procesar_zip_reporta_zip_corrupto_sin_detener_el_caso_de_uso() {
 }
 
 #[test]
+fn procesar_zip_respeta_tipos_incluidos_y_no_repite_impuestos_si_se_configura() {
+    let fixture = crear_zip(&[(
+        "cfdi40_ganado_iva_tasa0.xml",
+        include_bytes!("fixtures/cfdi40_ganado_iva_tasa0.xml"),
+    )]);
+    let zip_file = escribir_temporal(&fixture);
+    let processor = ProcesarZip::new(ZipXmlReader, XmlCfdiParser);
+
+    let mut config = AppConfig::default();
+    config.extraccion.incluir_tipos.i = false;
+    let filtrado = processor.ejecutar_con_config(zip_file.path(), None, &config, |_, _| {});
+    assert_eq!(filtrado.total_cfdi_ok, 1);
+    assert!(filtrado.filas.is_empty());
+
+    config.extraccion.incluir_tipos.i = true;
+    config.extraccion.repetir_impuestos_en_cada_concepto = false;
+    let sin_impuestos_repetidos =
+        processor.ejecutar_con_config(zip_file.path(), None, &config, |_, _| {});
+    assert!(!sin_impuestos_repetidos.filas.is_empty());
+    assert!(
+        sin_impuestos_repetidos
+            .filas
+            .iter()
+            .all(|fila| fila.iva_trasladado_002.is_none()
+                && fila.isr_retenido_001.is_none()
+                && fila.iva_retenido_002.is_none())
+    );
+}
+
+#[test]
 fn exportar_xlsx_conserva_hojas_numeros_y_celdas_vacias() {
     let fixture = crear_zip(&[(
         "cfdi40_ganado_iva_tasa0.xml",
@@ -344,6 +375,33 @@ fn exportar_xlsx_conserva_hojas_numeros_y_celdas_vacias() {
     let resultado: ResultadoProceso =
         ProcesarZip::new(ZipXmlReader, XmlCfdiParser).ejecutar(zip_file.path(), None);
     let xlsx_file = NamedTempFile::new().expect("temporary xlsx is created");
+    let mut config = AppConfig::default();
+    config.excel.columnas_visibles_cfdi = [
+        "UUID",
+        "Fecha",
+        "RFC Emisor",
+        "Nombre Emisor",
+        "RFC Receptor",
+        "Tipo de Comprobante",
+        "Subtotal",
+        "Descuento",
+        "IVA trasladado (002)",
+        "ISR retenido (001)",
+        "IVA retenido (002)",
+        "Total",
+        "Uso CFDI",
+        "Método de Pago",
+        "Forma de Pago",
+        "Moneda",
+        "Tipo de Cambio",
+        "ClaveProdServ",
+        "Descripción",
+        "Importe",
+        "Archivo",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect();
 
     XlsxExporter
         .exportar(
@@ -351,6 +409,7 @@ fn exportar_xlsx_conserva_hojas_numeros_y_celdas_vacias() {
             &resultado.resumen,
             &resultado.clasificaciones,
             &resultado.errores,
+            &config,
             xlsx_file.path(),
         )
         .expect("XLSX exports");
@@ -392,10 +451,52 @@ fn exportar_xlsx_conserva_hojas_numeros_y_celdas_vacias() {
 }
 
 #[test]
+fn exportar_xlsx_respeta_nombres_hojas_inclusion_y_columnas_configuradas() {
+    let fixture = crear_zip(&[(
+        "cfdi40_ganado_iva_tasa0.xml",
+        include_bytes!("fixtures/cfdi40_ganado_iva_tasa0.xml"),
+    )]);
+    let zip_file = escribir_temporal(&fixture);
+    let resultado = ProcesarZip::new(ZipXmlReader, XmlCfdiParser).ejecutar(zip_file.path(), None);
+    let xlsx_file = NamedTempFile::new().expect("temporary xlsx is created");
+    let mut config = AppConfig::default();
+    config.excel.nombre_hoja_cfdi = "Comprobantes".to_owned();
+    config.excel.hojas_incluidas.resumen = false;
+    config.excel.hojas_incluidas.clasificacion = false;
+    config.excel.hojas_incluidas.errores = false;
+    config.excel.columnas_visibles_cfdi = vec!["Importe".to_owned(), "Archivo".to_owned()];
+
+    XlsxExporter
+        .exportar(
+            &resultado.filas,
+            &resultado.resumen,
+            &resultado.clasificaciones,
+            &resultado.errores,
+            &config,
+            xlsx_file.path(),
+        )
+        .expect("configured XLSX exports");
+
+    let mut workbook = open_workbook_auto(xlsx_file.path()).expect("XLSX reopens");
+    assert_eq!(workbook.sheet_names(), ["Comprobantes"]);
+    let cfdi = workbook
+        .worksheet_range("Comprobantes")
+        .expect("configured sheet opens");
+    assert_eq!(
+        cfdi.get((0, 0)).and_then(DataType::get_string),
+        Some("Importe")
+    );
+    assert_eq!(
+        cfdi.get((0, 1)).and_then(DataType::get_string),
+        Some("Archivo")
+    );
+}
+
+#[test]
 fn exportar_xlsx_escribe_encabezado_de_errores_sin_registros() {
     let xlsx_file = NamedTempFile::new().expect("temporary xlsx is created");
     XlsxExporter
-        .exportar(&[], &[], &[], &[], xlsx_file.path())
+        .exportar(&[], &[], &[], &[], &AppConfig::default(), xlsx_file.path())
         .expect("empty XLSX exports");
 
     let mut workbook = open_workbook_auto(xlsx_file.path()).expect("XLSX reopens");

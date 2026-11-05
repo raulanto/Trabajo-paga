@@ -62,11 +62,58 @@ impl AppConfig {
         if let Some(error) = validar_hoja("Errores", &self.excel.nombre_hoja_errores) {
             errors.push(ErrorConfig::new("excel.nombre_hoja_errores", error));
         }
+        let included_sheet_names = [
+            (
+                self.excel.hojas_incluidas.cfdi,
+                &self.excel.nombre_hoja_cfdi,
+            ),
+            (
+                self.excel.hojas_incluidas.resumen,
+                &self.excel.nombre_hoja_resumen,
+            ),
+            (
+                self.excel.hojas_incluidas.clasificacion,
+                &self.excel.nombre_hoja_clasificacion,
+            ),
+            (
+                self.excel.hojas_incluidas.errores,
+                &self.excel.nombre_hoja_errores,
+            ),
+        ];
+        for (index, (included, name)) in included_sheet_names.iter().enumerate() {
+            if *included
+                && included_sheet_names[..index]
+                    .iter()
+                    .any(|(earlier_included, earlier_name)| {
+                        *earlier_included && earlier_name.eq_ignore_ascii_case(name)
+                    })
+            {
+                errors.push(ErrorConfig::new(
+                    "excel.hojas_incluidas",
+                    "Los nombres de las hojas incluidas deben ser distintos.",
+                ));
+            }
+        }
 
         if !(28..=44).contains(&self.tabla.altura_fila) {
             errors.push(ErrorConfig::new(
                 "tabla.altura_fila",
                 "La altura de fila debe estar entre 28 y 44 px.",
+            ));
+        }
+        if !self.tabla.overscan_px.is_finite() || self.tabla.overscan_px < 0.0 {
+            errors.push(ErrorConfig::new(
+                "tabla.overscan_px",
+                "El overscan debe ser un número positivo.",
+            ));
+        }
+
+        if !self.apariencia.tamaño_fuente.is_finite()
+            || !(10.0..=20.0).contains(&self.apariencia.tamaño_fuente)
+        {
+            errors.push(ErrorConfig::new(
+                "apariencia.tamaño_fuente",
+                "El tamaño de fuente debe estar entre 10 y 20 px.",
             ));
         }
 
@@ -88,6 +135,77 @@ impl AppConfig {
             errors.push(ErrorConfig::new(
                 "excel.columnas_visibles_cfdi",
                 "Debe haber al menos una columna visible en la hoja CFDI.",
+            ));
+        }
+        let valid_columns = [
+            "UUID",
+            "Fecha",
+            "RFC Emisor",
+            "Nombre Emisor",
+            "RFC Receptor",
+            "Tipo de Comprobante",
+            "Subtotal",
+            "Descuento",
+            "IVA trasladado (002)",
+            "ISR retenido (001)",
+            "IVA retenido (002)",
+            "Total",
+            "Uso CFDI",
+            "Método de Pago",
+            "Forma de Pago",
+            "Moneda",
+            "Tipo de Cambio",
+            "ClaveProdServ",
+            "Descripción",
+            "Importe",
+            "Archivo",
+        ];
+        if self
+            .excel
+            .columnas_visibles_cfdi
+            .iter()
+            .any(|column| !valid_columns.contains(&column.as_str()))
+        {
+            errors.push(ErrorConfig::new(
+                "excel.columnas_visibles_cfdi",
+                "Hay una columna CFDI que no existe.",
+            ));
+        }
+        for (index, column) in self.excel.columnas_visibles_cfdi.iter().enumerate() {
+            if self.excel.columnas_visibles_cfdi[..index]
+                .iter()
+                .any(|earlier| earlier == column)
+            {
+                errors.push(ErrorConfig::new(
+                    "excel.columnas_visibles_cfdi",
+                    "No repitas columnas CFDI.",
+                ));
+                break;
+            }
+        }
+
+        if !(self.excel.hojas_incluidas.cfdi
+            || self.excel.hojas_incluidas.resumen
+            || self.excel.hojas_incluidas.clasificacion
+            || self.excel.hojas_incluidas.errores)
+        {
+            errors.push(ErrorConfig::new(
+                "excel.hojas_incluidas",
+                "Debe incluirse al menos una hoja.",
+            ));
+        }
+
+        if self.excel.formato_nombre_archivo.trim().is_empty()
+            || self.excel.formato_nombre_archivo.chars().any(|character| {
+                matches!(
+                    character,
+                    '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|'
+                )
+            })
+        {
+            errors.push(ErrorConfig::new(
+                "excel.formato_nombre_archivo",
+                "El formato del nombre no puede estar vacío ni incluir caracteres de ruta.",
             ));
         }
 
@@ -209,10 +327,27 @@ pub struct ClasificacionConfig {
 impl Default for ClasificacionConfig {
     fn default() -> Self {
         Self {
-            reglas_honorarios: vec![ReglaClasificacion::default()],
+            reglas_honorarios: vec![ReglaClasificacion {
+                categoria: "Honorarios".to_owned(),
+                palabras_clave: vec![
+                    "honorarios".to_owned(),
+                    "servicios profesionales".to_owned(),
+                    "asesoría".to_owned(),
+                    "consultoría".to_owned(),
+                ],
+                activa: true,
+            }],
             reglas_inversion: vec![ReglaClasificacion {
                 categoria: "Inversión".to_owned(),
-                palabras_clave: vec!["equipo de cómputo".to_owned()],
+                palabras_clave: vec![
+                    "equipo de cómputo".to_owned(),
+                    "maquinaria".to_owned(),
+                    "vehículo".to_owned(),
+                    "mobiliario".to_owned(),
+                    "terreno".to_owned(),
+                    "edificio".to_owned(),
+                    "activo fijo".to_owned(),
+                ],
                 activa: true,
             }],
             regla_nomina_tipo_n: true,
@@ -491,4 +626,42 @@ fn validar_hoja(nombre: &str, value: &str) -> Option<String> {
         ));
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AppConfig;
+
+    #[test]
+    fn valida_rfc_propio_opcional_y_longitudes_de_persona_fisica_y_moral() {
+        let mut config = AppConfig::default();
+        assert!(config.is_valid());
+
+        config.general.rfc_propio = Some("AAA010101AAA".to_owned());
+        assert!(config.is_valid());
+        config.general.rfc_propio = Some("ABCD010101AA1".to_owned());
+        assert!(config.is_valid());
+        config.general.rfc_propio = Some("RFC-CORTO".to_owned());
+        assert!(
+            config
+                .validar()
+                .iter()
+                .any(|error| error.campo == "general.rfc_propio")
+        );
+    }
+
+    #[test]
+    fn rechaza_columnas_desconocidas_y_nombres_de_archivo_con_ruta() {
+        let mut config = AppConfig::default();
+        config.excel.columnas_visibles_cfdi = vec!["Columna inventada".to_owned()];
+        config.excel.formato_nombre_archivo = "../fuera.xlsx".to_owned();
+
+        let fields = config
+            .validar()
+            .into_iter()
+            .map(|error| error.campo)
+            .collect::<Vec<_>>();
+        assert!(fields.contains(&"excel.columnas_visibles_cfdi"));
+        assert!(fields.contains(&"excel.formato_nombre_archivo"));
+    }
 }

@@ -32,6 +32,46 @@ impl TomlConfigRepository {
         }
         Ok(())
     }
+
+    fn cargar_desde(path: &Path) -> io::Result<AppConfig> {
+        let text = fs::read_to_string(path)?;
+        let mut config = toml::from_str::<AppConfig>(&text).map_err(|error| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("TOML inválido: {error}"),
+            )
+        })?;
+        if !config.is_valid() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "la configuración contiene valores inválidos",
+            ));
+        }
+        config.reordenar_version();
+        Ok(config)
+    }
+
+    fn guardar_en(path: &Path, config: &AppConfig) -> io::Result<()> {
+        if !config.is_valid() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "la configuración contiene valores inválidos",
+            ));
+        }
+        Self::ensure_parent_dir(path)?;
+        let tmp = path.with_extension("toml.tmp");
+        let mut export_config = config.clone();
+        export_config.reordenar_version();
+        let text = toml::to_string_pretty(&export_config).map_err(|error| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("config serializable: {error}"),
+            )
+        })?;
+        fs::write(&tmp, text)?;
+        fs::rename(&tmp, path)?;
+        Ok(())
+    }
 }
 
 impl Default for TomlConfigRepository {
@@ -46,35 +86,67 @@ impl ConfigRepository for TomlConfigRepository {
             return Ok(AppConfig::default());
         }
 
-        let bytes = fs::read(&self.path)?;
-        let text = String::from_utf8_lossy(&bytes);
-        match toml::from_str::<AppConfig>(&text) {
-            Ok(mut config) => {
-                config.version = config.version.max(1);
-                config.reordenar_version();
-                Ok(config)
-            }
-            Err(_) => {
-                let backup = self.path.with_extension("toml.bak");
-                let _ = fs::copy(&self.path, &backup);
-                let default = AppConfig::default();
-                let _ = self.guardar(&default);
-                Ok(default)
-            }
-        }
+        Self::cargar_desde(&self.path)
     }
 
     fn guardar(&self, config: &AppConfig) -> io::Result<()> {
-        Self::ensure_parent_dir(&self.path)?;
-        let tmp = self.path.with_extension("toml.tmp");
-        let text = toml::to_string_pretty(config).map_err(|error| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("config serializable: {error}"),
-            )
-        })?;
-        fs::write(&tmp, text)?;
-        fs::rename(&tmp, &self.path)?;
-        Ok(())
+        Self::guardar_en(&self.path, config)
+    }
+
+    fn importar(&self, ruta: &Path) -> io::Result<AppConfig> {
+        Self::cargar_desde(ruta)
+    }
+
+    fn exportar(&self, ruta: &Path, config: &AppConfig) -> io::Result<()> {
+        Self::guardar_en(ruta, config)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{fs, io};
+
+    use crate::{application::config_service::ConfigRepository, domain::config::AppConfig};
+
+    use super::TomlConfigRepository;
+
+    #[test]
+    fn exporta_e_importa_configuracion_valida_y_rechaza_toml_defectuoso() {
+        let directory = tempfile::tempdir().expect("temporary directory is created");
+        let path = directory.path().join("config.toml");
+        let repository = TomlConfigRepository::new();
+        let config = AppConfig::default();
+
+        repository.exportar(&path, &config).expect("config exports");
+        assert_eq!(repository.importar(&path).expect("config imports"), config);
+
+        fs::write(&path, "excel = [").expect("invalid TOML fixture writes");
+        assert_eq!(
+            repository
+                .importar(&path)
+                .expect_err("invalid TOML is rejected")
+                .kind(),
+            io::ErrorKind::InvalidData
+        );
+    }
+
+    #[test]
+    fn no_exporta_configuracion_invalida() {
+        let directory = tempfile::tempdir().expect("temporary directory is created");
+        let path = directory.path().join("config.toml");
+        let repository = TomlConfigRepository::new();
+        let mut config = AppConfig::default();
+        config.excel.hojas_incluidas.cfdi = false;
+        config.excel.hojas_incluidas.resumen = false;
+        config.excel.hojas_incluidas.clasificacion = false;
+        config.excel.hojas_incluidas.errores = false;
+
+        assert_eq!(
+            repository
+                .exportar(&path, &config)
+                .expect_err("invalid config is rejected")
+                .kind(),
+            io::ErrorKind::InvalidInput
+        );
     }
 }

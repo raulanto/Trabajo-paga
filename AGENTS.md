@@ -25,9 +25,15 @@ Hexagonal / clean. Dependencias solo hacia adentro:
 - `domain/`: tipos y reglas puras. Sin I/O, sin GPUI, sin crates de ZIP/XML/Excel.
 - `application/`: casos de uso y traits (`ports.rs`).
 - `infrastructure/`: implementaciones de los ports (zip, quick-xml, rust_xlsxwriter).
-- `ui/`: GPUI. No parsea ni escribe archivos; invoca casos de uso.
+- `ui/`: GPUI + Ely. No parsea ni escribe archivos; invoca casos de uso.
 
 No saltarse capas. Si se necesita un nuevo I/O, definir primero el port.
+
+## Dependencias y UI
+
+- Las dependencias Git de la UI deben fijar un `rev` inmutable; no usar ramas ni tags móviles.
+- No mezclar Ely con implementaciones alternativas de componentes GPUI ni incorporar una segunda versión incompatible de GPUI.
+- La UI no parsea XML/ZIP ni escribe Excel/configuración directamente: delega esas operaciones a casos de uso y ports.
 
 ## Convenciones de código
 

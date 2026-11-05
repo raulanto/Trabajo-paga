@@ -1,6 +1,6 @@
-# Reconocimiento de Ely GPUI Components
+# Inventario de Ely GPUI Components
 
-Migración de GPUKit a Ely, parte 1 de 6. Este documento registra compatibilidad y límites; no cambia la UI ni las dependencias del proyecto.
+Este documento registra las capacidades, decisiones y límites de Ely usados por la aplicación.
 
 ## Mapeo de necesidades
 
@@ -82,14 +82,14 @@ La galería ejecutó la página Tables, que demuestra la tabla simple, toolbar c
 
 ## Versión recomendada y riesgos
 
-- **Rev para fijar en una evaluación:** `89bff04957fde8bec63529bea0efe90f2a183159` (HEAD del clon revisado, 2026-11-03). Es un pin reproducible para esta etapa, no una recomendación de estabilidad de producción:
+- **Rev fijado por la aplicación:** `89bff04957fde8bec63529bea0efe90f2a183159`. Es un pin reproducible, no una recomendación de estabilidad de producción:
 
   ```toml
   ely-gpui-component = { git = "https://github.com/ELY-Open-Source/Ely-GPUI-Components", rev = "89bff04957fde8bec63529bea0efe90f2a183159" }
   ```
 
 - **Rust mínimo:** 1.98, edición 2024. Ely fija `gpui`, `gpui_platform` y `gpui_web` a `gpui-pre =0.3.10`; los ejemplos de integración asumen esa versión.
-- **No es un reemplazo binariamente compatible:** el README de esta app usa GPUKit 0.9.0 con `gpui-unofficial` 1.14.2. Ely usa otro snapshot/crate de GPUI; mantener ambos puede duplicar tipos GPUI incompatibles. La migración debe sustituir la base GPUI coordinadamente, no mezclar widgets entre ambos.
+- **Compatibilidad de GPUI:** Ely está enlazado a `gpui-pre` 0.3.10. No combinarlo con componentes que dependan de otro snapshot o crate incompatible de GPUI, ya que pueden duplicar tipos GPUI incompatibles.
 - **Estabilidad:** `tasks/stability.md` marca inestables todos los crates, sin sign-offs humanos; los componentes y APIs pueden cambiar.
 - **Pendientes del upstream:** T49 (aceptación: URL pública y checklist MVP) y T56 (optimización) siguen sin marcarse completos en `TASKS.md`. T56 conserva O-07 abierto por duplicados transitivos que vienen de RaTeX y O-27 abierto a la firma del propietario. `tasks/acceptance.md` registra esas limitaciones.
 - **Accesibilidad de diálogos:** `tasks/voiceover.md` anota límites de GPUI 0.3.10: VoiceOver puede no seguir el foco al abrir un diálogo hasta el siguiente movimiento y puede recorrer contenido detrás del diálogo porque GPUI no marca el nodo como modal.

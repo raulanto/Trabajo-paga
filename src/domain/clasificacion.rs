@@ -2,7 +2,10 @@
 
 use unicode_normalization::{UnicodeNormalization, char::is_combining_mark};
 
-use crate::domain::cfdi::CfdiRow;
+use crate::domain::{
+    cfdi::CfdiRow,
+    config::{ClasificacionConfig, ReglaClasificacion},
+};
 
 pub const CLAVES_HONORARIOS: &[&str] = &[
     "honorarios",
@@ -57,10 +60,19 @@ pub struct FilaClasificada {
 }
 
 pub fn clasificar(fila: &CfdiRow, rfc_propio: Option<&str>) -> Clasificacion {
+    clasificar_con_config(fila, rfc_propio, &ClasificacionConfig::default())
+}
+
+pub fn clasificar_con_config(
+    fila: &CfdiRow,
+    rfc_propio: Option<&str>,
+    config: &ClasificacionConfig,
+) -> Clasificacion {
     if fila
         .tipo_comprobante
         .as_deref()
         .is_some_and(|tipo| tipo.eq_ignore_ascii_case("N"))
+        && config.regla_nomina_tipo_n
     {
         return sugerencia(Categoria::Nomina, "Tipo N");
     }
@@ -71,30 +83,19 @@ pub fn clasificar(fila: &CfdiRow, rfc_propio: Option<&str>) -> Clasificacion {
         .map(normalizar)
         .unwrap_or_default();
 
-    if let Some(clave) = CLAVES_HONORARIOS
-        .iter()
-        .find(|clave| descripcion.contains(&normalizar(clave)))
-    {
-        return sugerencia(
-            Categoria::Honorarios,
-            format!("Descripción contiene palabra clave: {clave}"),
-        );
+    if let Some(sugerencia) = buscar_regla(&descripcion, &config.reglas_honorarios) {
+        return sugerencia;
     }
 
-    if let Some(clave) = CLAVES_INVERSION
-        .iter()
-        .find(|clave| descripcion.contains(&normalizar(clave)))
-    {
-        return sugerencia(
-            Categoria::Inversion,
-            format!("Descripción contiene palabra clave: {clave}"),
-        );
+    if let Some(sugerencia) = buscar_regla(&descripcion, &config.reglas_inversion) {
+        return sugerencia;
     }
 
     if fila
         .tipo_comprobante
         .as_deref()
         .is_some_and(|tipo| tipo.eq_ignore_ascii_case("I"))
+        && config.regla_ingreso_gasto_por_rfc
     {
         let rfc_normalizado = rfc_propio.map(normalizar_rfc).filter(|rfc| !rfc.is_empty());
         if let Some(rfc_normalizado) = rfc_normalizado {
@@ -112,17 +113,55 @@ pub fn clasificar(fila: &CfdiRow, rfc_propio: Option<&str>) -> Clasificacion {
             {
                 return sugerencia(Categoria::Gasto, "RFC receptor coincide con RFC propio");
             }
-            return sugerencia(Categoria::Otros, "Tipo I sin coincidencia con RFC propio");
+            return sugerencia(
+                categoria_desde_nombre(&config.categoria_por_defecto),
+                "Tipo I sin coincidencia con RFC propio",
+            );
         }
 
-        return sugerencia(Categoria::Otros, "Tipo I sin RFC propio");
+        return sugerencia(
+            categoria_desde_nombre(&config.categoria_por_defecto),
+            "Tipo I sin RFC propio",
+        );
     }
 
     let criterio = match fila.tipo_comprobante.as_deref() {
         Some(tipo) => format!("Tipo {tipo} sin regla"),
         None => "Tipo de comprobante ausente sin regla".to_owned(),
     };
-    sugerencia(Categoria::Otros, criterio)
+    sugerencia(
+        categoria_desde_nombre(&config.categoria_por_defecto),
+        criterio,
+    )
+}
+
+fn buscar_regla(descripcion: &str, reglas: &[ReglaClasificacion]) -> Option<Clasificacion> {
+    reglas
+        .iter()
+        .filter(|regla| regla.activa)
+        .find_map(|regla| {
+            regla
+                .palabras_clave
+                .iter()
+                .find(|clave| descripcion.contains(&normalizar(clave)))
+                .map(|clave| {
+                    sugerencia(
+                        categoria_desde_nombre(&regla.categoria),
+                        format!("Descripción contiene palabra clave: {clave}"),
+                    )
+                })
+        })
+}
+
+fn categoria_desde_nombre(nombre: &str) -> Categoria {
+    match normalizar(nombre).trim() {
+        "ingreso" => Categoria::Ingreso,
+        "gasto" => Categoria::Gasto,
+        "honorarios" => Categoria::Honorarios,
+        "nomina" => Categoria::Nomina,
+        "inversion" => Categoria::Inversion,
+        _ => Categoria::Otros,
+    }
 }
 
 fn sugerencia(categoria: Categoria, criterio: impl Into<String>) -> Clasificacion {

@@ -5,6 +5,7 @@ use std::path::Path;
 use crate::domain::{
     cfdi::CfdiRow,
     clasificacion::FilaClasificada,
+    config::AppConfig,
     error::{ErrorArchivo, ErrorCfdi},
 };
 
@@ -29,6 +30,7 @@ pub trait ExcelExporter {
         resumen: &[ResumenProducto],
         clasificaciones: &[FilaClasificada],
         errores: &[ErrorArchivo],
+        config: &AppConfig,
         destino: &Path,
     ) -> Result<(), Self::Error>;
 }

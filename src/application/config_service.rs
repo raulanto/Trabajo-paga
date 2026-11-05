@@ -1,10 +1,12 @@
-use std::io;
+use std::{io, path::Path};
 
 use crate::domain::config::AppConfig;
 
 pub trait ConfigRepository {
     fn cargar(&self) -> io::Result<AppConfig>;
     fn guardar(&self, config: &AppConfig) -> io::Result<()>;
+    fn importar(&self, ruta: &Path) -> io::Result<AppConfig>;
+    fn exportar(&self, ruta: &Path, config: &AppConfig) -> io::Result<()>;
 }
 
 #[derive(Clone)]
@@ -25,5 +27,13 @@ impl<R: ConfigRepository> ConfigService<R> {
 
     pub fn guardar(&self, config: &AppConfig) -> io::Result<()> {
         self.repo.guardar(config)
+    }
+
+    pub fn importar(&self, ruta: &Path) -> io::Result<AppConfig> {
+        self.repo.importar(ruta)
+    }
+
+    pub fn exportar(&self, ruta: &Path, config: &AppConfig) -> io::Result<()> {
+        self.repo.exportar(ruta, config)
     }
 }

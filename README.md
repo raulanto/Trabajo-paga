@@ -1,21 +1,22 @@
 # CFDI ZIP Processor
 
-Aplicación de escritorio (Rust + GPUI) que procesa un archivo ZIP con CFDI en XML (emitidos y recibidos), extrae los datos a nivel concepto y genera un Excel con 4 hojas y una vista previa en pantalla.
+Aplicación de escritorio en Rust con GPUI y Ely que procesa un archivo ZIP con CFDI en XML (emitidos y recibidos), extrae los datos a nivel concepto y genera un Excel con 4 hojas y una vista previa en pantalla.
 
 > Regla base: **solo extrae, no interpreta fiscalmente y no inventa datos**. Si un dato falta, la celda queda vacía.
 
 ## Stack
 
-| Capa               | Tecnología                                                                     |
-| ------------------ | ------------------------------------------------------------------------------ |
-| UI                 | Spike de migración: `ely-gpui-component` + `gpui-pre` 0.3.10                   |
-| Rust mínimo        | 1.98                                                                           |
-| ZIP                | `zip`                                                                          |
-| XML con namespaces | `quick-xml` (`NsReader`)                                                       |
-| Excel              | `rust_xlsxwriter`                                                              |
-| Decimales          | `rust_decimal` (nunca `f64` para dinero)                                       |
-| Errores            | `thiserror`                                                                    |
-| Tests              | `cargo test` + fixtures XML en `tests/fixtures/` + lectura XLSX con `calamine` |
+| Capa               | Tecnología                                                                               |
+| ------------------ | ---------------------------------------------------------------------------------------- |
+| UI                 | Ely GPUI Components, rev `89bff04957fde8bec63529bea0efe90f2a183159`                      |
+| Base de ventanas   | `gpui-pre` / `gpui-pre-platform` 0.3.10                                                  |
+| Rust mínimo        | 1.98, edición 2024                                                                       |
+| ZIP                | `zip`                                                                                     |
+| XML con namespaces | `quick-xml` (`NsReader`)                                                                  |
+| Excel              | `rust_xlsxwriter`                                                                         |
+| Decimales          | `rust_decimal` (nunca `f64` para dinero)                                                  |
+| Errores            | `thiserror`                                                                               |
+| Tests              | `cargo test` + fixtures XML en `tests/fixtures/` + lectura XLSX con `calamine`           |
 
 ## Flujo
 
@@ -56,7 +57,7 @@ La clasificación no es interpretación fiscal. Se evalúa en este orden y se co
 4. Tipo I con RFC propio: emisor coincide → Ingreso; receptor coincide → Gasto.
 5. Otros; el criterio explica por qué no aplicó una regla.
 
-La comparación de palabras clave ignora mayúsculas y acentos. RFC propio es opcional; sin RFC no se distingue Ingreso de Gasto. La lista editable está en `src/domain/clasificacion.rs`.
+La comparación de palabras clave ignora mayúsculas y acentos. RFC propio es opcional; sin RFC no se distingue Ingreso de Gasto. Las palabras clave y la categoría predeterminada se pueden ajustar en Configuración.
 
 ## Hojas del Excel
 
@@ -85,23 +86,20 @@ src/
 │   ├── zip_reader.rs
 │   ├── xml_parser.rs  # quick-xml + namespaces
 │   └── xlsx_exporter.rs
-└── ui/                # Reservado para la nueva UI Ely
-old_ui/                 # UI GPUKit anterior, preservada fuera del build
+└── ui/                # UI Ely y presentación de resultados
 tests/
 ├── parser.rs
 ├── use_cases.rs
 └── fixtures/          # XML 3.3/4.0, IVA tasa 0, tipos, corruptos y namespaces
 ```
 
-La UI nunca parsea ni escribe archivos directamente: llama a los casos de uso. El procesamiento corre fuera del hilo de UI y reporta progreso. La interfaz previa se conserva en `old_ui/` como referencia funcional, pero no se compila.
+La UI nunca parsea ni escribe archivos directamente: llama a los casos de uso. El procesamiento corre fuera del hilo de UI y reporta progreso.
 
 ## Interfaz de escritorio
 
 La ventana Ely abre a 1200 × 760 px y admite un mínimo de 900 × 560 px. La pantalla permite seleccionar o soltar un ZIP, indicar opcionalmente el RFC propio, procesar en segundo plano, consultar métricas y exportar el Excel. El tema claro/oscuro sigue la apariencia del sistema o el valor configurado. Los resultados se muestran en cuatro pestañas con contadores y tablas virtualizadas: CFDI (21 columnas), Resumen por producto (4), Clasificación sugerida (7) y Errores (2). Cada tabla permite buscar y filtrar filas, ordenar y seleccionar, redimensionar y reordenar columnas, desplazarse en ambos ejes y copiar datos como TSV. Los montos se conservan como texto decimal; el único total de vista previa es Importe a nivel concepto.
 
-La pantalla de Configuración sigue pendiente en las siguientes partes de la migración.
-
-La UI GPUKit anterior, con el flujo de procesamiento CFDI, selección de archivos, exportación y tabla de vista previa, queda preservada en `old_ui/` para orientar las siguientes partes de la migración.
+La pantalla de Configuración ofrece navegación por ocho secciones, guardado automático con debounce, validación, restauración por sección o completa, e importación/exportación TOML. Incluye ajustes de RFC, extracción, clasificación sugerida, hojas y formatos de Excel, tabla, apariencia y atajos. Los cambios de apariencia se aplican en vivo; los que afectan al procesamiento requieren reprocesar el ZIP. Los campos avanzados de hilos, registro de depuración y errores detallados no se muestran porque todavía no tienen efecto en el backend. Ely tampoco permite ajustar el overscan ni desactivar el resaltado al pasar el puntero.
 
 Para generar un ZIP de carga con 5,000 CFDI sintéticos basados en el fixture:
 
@@ -149,7 +147,7 @@ nombre_hoja_resumen = "Resumen por producto"
 nombre_hoja_clasificacion = "Clasificación sugerida"
 nombre_hoja_errores = "Errores"
 formato_nombre_archivo = "cfdi_{YYYYMMDD}_{HHmm}.xlsx"
-columna_visibles_cfdi = ["UUID", "Fecha", "Total", "ClaveProdServ", "Descripción", "Importe", "Archivo"]
+columnas_visibles_cfdi = ["UUID", "Fecha", "Total", "ClaveProdServ", "Descripción", "Importe", "Archivo"]
 decimales_monto = 2
 decimales_tipo_cambio = 6
 abrir_carpeta_al_exportar = false
@@ -186,14 +184,29 @@ Los cambios de configuración solo afectan la presentación, clasificación suge
 ## Preguntas abiertas
 
 1. **Emitidas vs. Recibidas:** no hay columna por ahora. RFC propio opcional solo guía sugerencias de Ingreso/Gasto.
-2. **Clasificación:** las palabras clave son fijas en código por ahora; se puede decidir después si el catálogo debe ser editable.
 
 ## Ejecución
 
+### Requisitos por plataforma
+
+- **Todas:** Rust 1.98 o posterior con Cargo (edición 2024).
+- **Linux:** herramientas de compilación y `pkg-config`, junto con las bibliotecas de desarrollo de X11/XCB, Wayland, Fontconfig y FreeType. En Debian/Ubuntu: `sudo apt install build-essential pkg-config libx11-dev libxcb1-dev libxcb-xkb-dev libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libfontconfig1-dev libfreetype6-dev`.
+- **macOS:** Xcode Command Line Tools (`xcode-select --install`).
+- **Windows:** Visual Studio Build Tools con la carga **Desarrollo para el escritorio con C++** y el Windows SDK; usa el target MSVC de Rust.
+
+Instala el toolchain de Rust desde [rustup](https://rustup.rs/) y verifica que `rustc --version` sea al menos 1.98.
+
+### Compilar y ejecutar
+
+Desde la raíz del repositorio, en Linux, macOS o Windows, los comandos Cargo son los mismos:
+
 ```bash
+cargo build --release
 cargo run --release
 cargo test
 ```
+
+En Linux, la aplicación usa Wayland o X11 según el escritorio disponible. Para compilar de forma cruzada entre sistemas operativos, usa un entorno nativo de cada plataforma: Cargo no instala los toolchains ni SDKs de escritorio.
 
 ## Licencia
 

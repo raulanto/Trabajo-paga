@@ -4,7 +4,8 @@ use std::path::Path;
 
 use crate::domain::{
     cfdi::CfdiRow,
-    clasificacion::{FilaClasificada, clasificar},
+    clasificacion::{FilaClasificada, clasificar_con_config},
+    config::{AppConfig, TipoComprobanteConfig},
     error::ErrorArchivo,
 };
 
@@ -48,6 +49,19 @@ impl<Z: ZipReader, P: CfdiParser> ProcesarZip<Z, P> {
         &self,
         ruta_zip: impl AsRef<Path>,
         rfc_propio: Option<String>,
+        progreso: F,
+    ) -> ResultadoProceso
+    where
+        F: FnMut(usize, usize),
+    {
+        self.ejecutar_con_config(ruta_zip, rfc_propio, &AppConfig::default(), progreso)
+    }
+
+    pub fn ejecutar_con_config<F>(
+        &self,
+        ruta_zip: impl AsRef<Path>,
+        rfc_propio: Option<String>,
+        config: &AppConfig,
         mut progreso: F,
     ) -> ResultadoProceso
     where
@@ -69,6 +83,19 @@ impl<Z: ZipReader, P: CfdiParser> ProcesarZip<Z, P> {
                 Ok((nombre, xml)) => match self.cfdi_parser.parsear(&nombre, &xml) {
                     Ok(mut filas_xml) => {
                         total_cfdi_ok += 1;
+                        filas_xml.retain(|fila| {
+                            Self::tipo_incluido(
+                                fila.tipo_comprobante.as_deref(),
+                                &config.extraccion.incluir_tipos,
+                            )
+                        });
+                        if !config.extraccion.repetir_impuestos_en_cada_concepto {
+                            for fila in &mut filas_xml {
+                                fila.iva_trasladado_002 = None;
+                                fila.isr_retenido_001 = None;
+                                fila.iva_retenido_002 = None;
+                            }
+                        }
                         filas.append(&mut filas_xml);
                     }
                     Err(error) => errores.push(ErrorArchivo {
@@ -95,7 +122,11 @@ impl<Z: ZipReader, P: CfdiParser> ProcesarZip<Z, P> {
             .iter()
             .cloned()
             .map(|fila| FilaClasificada {
-                clasificacion: clasificar(&fila, rfc_propio.as_deref()),
+                clasificacion: clasificar_con_config(
+                    &fila,
+                    rfc_propio.as_deref(),
+                    &config.clasificacion,
+                ),
                 fila,
             })
             .collect();
@@ -107,6 +138,17 @@ impl<Z: ZipReader, P: CfdiParser> ProcesarZip<Z, P> {
             errores,
             total_xml_leidos,
             total_cfdi_ok,
+        }
+    }
+
+    fn tipo_incluido(tipo: Option<&str>, tipos: &TipoComprobanteConfig) -> bool {
+        match tipo.map(str::to_ascii_uppercase).as_deref() {
+            Some("I") => tipos.i,
+            Some("E") => tipos.e,
+            Some("P") => tipos.p,
+            Some("N") => tipos.n,
+            Some("T") => tipos.t,
+            _ => true,
         }
     }
 }
