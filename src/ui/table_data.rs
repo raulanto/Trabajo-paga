@@ -1,8 +1,8 @@
 use rust_decimal::Decimal;
-use std::rc::Rc;
+use std::{cell::RefCell, rc::Rc};
 
-use ely_gpui_component::tables::{Cell, Column, FilterRule, Row, Test};
-use gpui::{SharedString, rems};
+use ely_gpui_component::tables::{Cell, FilterRule, Row, Test};
+use gpui::SharedString;
 
 use crate::{
     application::{procesar_zip::ResultadoProceso, resumen::ResumenProducto},
@@ -174,6 +174,7 @@ pub(crate) const ERROR_COLUMNS: [ColumnSpec; 2] = [
 pub(crate) struct PreparedTable {
     pub rows: Vec<Row>,
     values: Vec<Box<[SharedString]>>,
+    search_values: Vec<Box<[String]>>,
     keys: Vec<SharedString>,
 }
 
@@ -195,8 +196,18 @@ pub(crate) struct UiTables {
 
 pub(crate) struct UiTable {
     pub rows: Rc<Vec<Row>>,
-    values: Vec<Box<[SharedString]>>,
-    keys: Vec<SharedString>,
+    pub values: Rc<Vec<Box<[SharedString]>>>,
+    search_values: Vec<Box<[String]>>,
+    pub keys: Rc<Vec<SharedString>>,
+    filtered_indices: RefCell<Option<(FilterCacheKey, Rc<Vec<usize>>)>>,
+}
+
+#[derive(PartialEq, Eq)]
+struct FilterCacheKey {
+    query: String,
+    filters: Vec<(usize, Test, String)>,
+    any: bool,
+    sort: Option<(usize, bool)>,
 }
 
 pub(crate) enum ImporteTotal {
@@ -271,24 +282,32 @@ impl PreparedTable {
     fn into_ui(self) -> UiTable {
         UiTable {
             rows: Rc::new(self.rows),
-            values: self.values,
-            keys: self.keys,
+            values: Rc::new(self.values),
+            search_values: self.search_values,
+            keys: Rc::new(self.keys),
+            filtered_indices: RefCell::new(None),
         }
     }
 }
 
 impl UiTable {
     pub fn to_tsv(&self, headers: &[&str], selected: &[SharedString]) -> String {
-        to_tsv(&self.values, &self.keys, headers, selected)
+        to_tsv(
+            self.values.as_slice(),
+            self.keys.as_slice(),
+            headers,
+            selected,
+        )
     }
 
-    pub fn visible_count(
+    pub fn filtered_indices(
         &self,
         query: &str,
         columns: &[ColumnSpec],
         filters: &[FilterRule],
         any: bool,
-    ) -> usize {
+        sort: Option<(usize, bool)>,
+    ) -> Rc<Vec<usize>> {
         let query = query.trim().to_lowercase();
         let filters = filters
             .iter()
@@ -297,57 +316,62 @@ impl UiTable {
                 columns
                     .iter()
                     .position(|column| column.key == rule.column.as_ref())
-                    .map(|column| (column, rule))
+                    .map(|column| (column, rule.test, rule.value.trim().to_lowercase()))
             })
             .collect::<Vec<_>>();
+        let key = FilterCacheKey {
+            query,
+            filters,
+            any,
+            sort,
+        };
 
-        self.values
+        if let Some((cached_key, indices)) = self.filtered_indices.borrow().as_ref()
+            && *cached_key == key
+        {
+            return Rc::clone(indices);
+        }
+
+        let matches_filter = |row: &[String], (column, test, expected): &(usize, Test, String)| {
+            let value = &row[*column];
+            match test {
+                Test::Contains => value.contains(expected),
+                Test::Equals => value == expected,
+                Test::NotEquals => value != expected,
+                Test::Above | Test::Below => false,
+                Test::Empty => value.is_empty(),
+            }
+        };
+        let mut indices = self
+            .search_values
             .iter()
-            .filter(|row| {
-                query.is_empty()
-                    || row
-                        .iter()
-                        .any(|value| value.to_lowercase().contains(&query))
+            .enumerate()
+            .filter(|(_, row)| {
+                key.query.is_empty() || row.iter().any(|value| value.contains(&key.query))
             })
-            .filter(|row| {
-                if filters.is_empty() {
+            .filter(|(_, row)| {
+                if key.filters.is_empty() {
                     return true;
                 }
-                let matches = |(column, rule): &(usize, &FilterRule)| {
-                    let value = row[*column].as_ref();
-                    let expected = rule.value.trim().to_lowercase();
-                    let value = value.to_lowercase();
-                    match rule.test {
-                        Test::Contains => value.contains(&expected),
-                        Test::Equals => value == expected,
-                        Test::NotEquals => value != expected,
-                        Test::Above | Test::Below => false,
-                        Test::Empty => value.is_empty(),
-                    }
-                };
                 if any {
-                    filters.iter().any(matches)
+                    key.filters.iter().any(|filter| matches_filter(row, filter))
                 } else {
-                    filters.iter().all(matches)
+                    key.filters.iter().all(|filter| matches_filter(row, filter))
                 }
             })
-            .count()
+            .map(|(index, _)| index)
+            .collect::<Vec<_>>();
+        if let Some((column, rising)) = key.sort {
+            indices.sort_by(|left, right| {
+                let ordering =
+                    self.search_values[*left][column].cmp(&self.search_values[*right][column]);
+                if rising { ordering } else { ordering.reverse() }
+            });
+        }
+        let indices = Rc::new(indices);
+        *self.filtered_indices.borrow_mut() = Some((key, Rc::clone(&indices)));
+        indices
     }
-}
-
-pub(crate) fn columns(specs: &[ColumnSpec]) -> Vec<Column> {
-    specs
-        .iter()
-        .map(|spec| {
-            let column = Column::new(spec.key, spec.title).width(rems(spec.width));
-            let column = if spec.numeric { column.end() } else { column };
-            if spec.sortable {
-                column
-            } else {
-                column.unsorted()
-            }
-        })
-        .collect()
 }
 
 fn prepare_rows<T>(
@@ -359,6 +383,7 @@ fn prepare_rows<T>(
 ) -> PreparedTable {
     let mut rows = Vec::with_capacity(values.len());
     let mut formatted_rows = Vec::with_capacity(values.len());
+    let mut search_values = Vec::with_capacity(values.len());
     let mut keys = Vec::with_capacity(values.len());
     for (index, item) in values.iter().enumerate() {
         let formatted = format_row(item)
@@ -366,6 +391,13 @@ fn prepare_rows<T>(
             .map(SharedString::from)
             .collect::<Vec<_>>()
             .into_boxed_slice();
+        search_values.push(
+            formatted
+                .iter()
+                .map(|value| value.to_lowercase())
+                .collect::<Vec<_>>()
+                .into_boxed_slice(),
+        );
         let key = SharedString::from(make_key(item, index));
         rows.push(Row::new(
             key.clone(),
@@ -378,6 +410,7 @@ fn prepare_rows<T>(
     PreparedTable {
         rows,
         values: formatted_rows,
+        search_values,
         keys,
     }
 }
@@ -580,6 +613,7 @@ mod tests {
         ];
         let table = PreparedTable {
             rows: Vec::new(),
+            search_values: Vec::new(),
             values,
             keys: vec!["test-0".into(), "test-1".into()],
         };
@@ -600,27 +634,74 @@ mod tests {
 
     #[test]
     fn cuenta_filas_visibles_con_busqueda_y_filtros_de_ely() {
+        let values = vec![
+            vec![SharedString::from("Uno"), SharedString::from("Válido")].into_boxed_slice(),
+            vec![SharedString::from("Dos"), SharedString::from("Error")].into_boxed_slice(),
+            vec![SharedString::from("Tres"), SharedString::from("")].into_boxed_slice(),
+        ];
+        let rows = values
+            .iter()
+            .enumerate()
+            .map(|(index, row)| {
+                Row::new(format!("test-{index}"), row.iter().cloned().map(Cell::Text))
+            })
+            .collect();
+        let search_values = values
+            .iter()
+            .map(|row| {
+                row.iter()
+                    .map(|value| value.to_lowercase())
+                    .collect::<Vec<_>>()
+                    .into_boxed_slice()
+            })
+            .collect();
         let table = PreparedTable {
-            rows: Vec::new(),
-            values: vec![
-                vec!["Uno".into(), "Válido".into()].into_boxed_slice(),
-                vec!["Dos".into(), "Error".into()].into_boxed_slice(),
-                vec!["Tres".into(), "".into()].into_boxed_slice(),
-            ],
+            rows,
+            values,
+            search_values,
             keys: vec!["uno".into(), "dos".into(), "tres".into()],
         }
         .into_ui();
         let columns = [col("nombre", "Nombre", 10.0), col("estado", "Estado", 10.0)];
-        assert_eq!(table.visible_count("o", &columns, &[], false), 2);
+        let matching = table.filtered_indices("o", &columns, &[], false, None);
+        assert_eq!(matching.len(), 2);
+        assert!(Rc::ptr_eq(
+            &matching,
+            &table.filtered_indices(" O ", &columns, &[], false, None)
+        ));
 
         let filters = [FilterRule {
             column: "estado".into(),
             test: Test::Contains,
             value: "error".into(),
         }];
-        assert_eq!(table.visible_count("", &columns, &filters, false), 1);
-        assert_eq!(table.visible_count("dos", &columns, &filters, false), 1);
-        assert_eq!(table.visible_count("uno", &columns, &filters, false), 0);
+        assert_eq!(
+            table
+                .filtered_indices("", &columns, &filters, false, None)
+                .len(),
+            1
+        );
+        assert_eq!(
+            table
+                .filtered_indices("dos", &columns, &filters, false, None)
+                .len(),
+            1
+        );
+        assert_eq!(
+            table
+                .filtered_indices("uno", &columns, &filters, false, None)
+                .len(),
+            0
+        );
+        assert_eq!(
+            &*table.filtered_indices("", &columns, &[], false, Some((0, true))),
+            &[1, 2, 0]
+        );
+        let sorted = table.filtered_indices("", &columns, &[], false, Some((0, true)));
+        assert!(Rc::ptr_eq(
+            &sorted,
+            &table.filtered_indices("", &columns, &[], false, Some((0, true)))
+        ));
     }
 
     #[test]

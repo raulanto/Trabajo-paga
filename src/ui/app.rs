@@ -7,21 +7,23 @@ use std::{
 
 use chrono::Local;
 use ely_gpui_component::{
-    buttons::Button,
+    buttons::{Button, ButtonVariant},
     data_display::{Badge, Tone},
     feedback::{Toast, ToastViewport, Toaster},
     forms::{Choice, ColorPicker, Input, InputEvent, Select, Switch, TextInput},
+    layout::Scrollbar,
     motion::ProgressBar,
     navigation::{NavItem, Tabs},
     overlays::Dialog,
-    primitives::Severity,
-    tables::{DataTable, FilterBuilder, FilterRule},
-    theme::{ActiveTheme, Density, Mode, Radius, Theme},
+    primitives::{Severity, tab_stop},
+    tables::{FilterBuilder, FilterRule},
+    theme::{ActiveTheme, ControlSize, Density, Mode, Radius, Theme},
 };
 use gpui::{
-    ClipboardItem, Context, Entity, ExternalPaths, FontWeight, Hsla, InteractiveElement,
-    IntoElement, KeyDownEvent, ParentElement, PathPromptOptions, Render, Rgba, SharedString,
-    Styled, Subscription, Window, black, div, prelude::*, rems,
+    Axis, ClipboardItem, Context, Entity, ExternalPaths, FontWeight, Hsla, InteractiveElement,
+    IntoElement, KeyDownEvent, ParentElement, PathPromptOptions, Render, Rgba, ScrollHandle,
+    SharedString, Styled, Subscription, UniformListScrollHandle, Window, black, div, prelude::*,
+    rems, uniform_list,
 };
 
 use crate::{
@@ -178,6 +180,10 @@ pub struct AppView {
     tablas: Option<UiTables>,
     active_tab: usize,
     selected_rows: [Vec<SharedString>; 4],
+    selection_anchors: [Option<SharedString>; 4],
+    table_sorts: [Option<(usize, bool)>; 4],
+    table_scroll_x: [ScrollHandle; 4],
+    table_scroll_y: [UniformListScrollHandle; 4],
     table_search: [Entity<TextInput>; 4],
     filter_rules: [Vec<FilterRule>; 4],
     filter_any: [bool; 4],
@@ -296,6 +302,10 @@ impl AppView {
             tablas: None,
             active_tab: 0,
             selected_rows: std::array::from_fn(|_| Vec::new()),
+            selection_anchors: std::array::from_fn(|_| None),
+            table_sorts: std::array::from_fn(|_| None),
+            table_scroll_x: std::array::from_fn(|_| ScrollHandle::new()),
+            table_scroll_y: std::array::from_fn(|_| UniformListScrollHandle::new()),
             table_search,
             filter_rules: std::array::from_fn(|_| Vec::new()),
             filter_any: [false; 4],
@@ -746,6 +756,7 @@ impl AppView {
         self.tablas = None;
         self.active_tab = 0;
         self.selected_rows = std::array::from_fn(|_| Vec::new());
+        self.selection_anchors = std::array::from_fn(|_| None);
         self.filter_rules = std::array::from_fn(|_| Vec::new());
         self.filter_any = [false; 4];
         self.filter_panel_open = false;
@@ -856,6 +867,7 @@ impl AppView {
                         self.tablas = Some((*tablas).into_ui());
                         self.active_tab = 0;
                         self.selected_rows = std::array::from_fn(|_| Vec::new());
+                        self.selection_anchors = std::array::from_fn(|_| None);
                     } else if let AppState::Error { mensaje, .. } = &self.state {
                         self.toast(mensaje.clone(), Severity::Danger, cx);
                     }
@@ -1947,10 +1959,14 @@ impl AppView {
             .to_owned();
         let filters = self.filter_rules[self.active_tab].clone();
         let filter_any = self.filter_any[self.active_tab];
-        let visible_count = table.visible_count(&search, columns, &filters, filter_any);
+        let sort = self.table_sorts[self.active_tab]
+            .filter(|(column, _)| columns.get(*column).is_some_and(|spec| spec.sortable));
+        let visible_indices = table.filtered_indices(&search, columns, &filters, filter_any, sort);
+        let visible_count = visible_indices.len();
         let selection = self.selected_rows[self.active_tab].clone();
         let weak_view = cx.weak_entity();
         let selection_tab = self.active_tab;
+        let table_index = self.active_tab;
 
         let table_body = if visible_count == 0 {
             let empty_text = if row_count == 0 && self.active_tab == 3 {
@@ -1970,23 +1986,207 @@ impl AppView {
                 .child(empty_text)
                 .into_any_element()
         } else {
-            DataTable::new(table_id, table_data::columns(columns))
-                .rows(Rc::clone(&table.rows))
-                .density(densidad_tabla(self.config.tabla.altura_fila))
-                .query(search)
-                .filters(filters, filter_any)
-                .selected(selection)
-                .on_select(move |keys, _, cx| {
-                    let keys = keys.to_vec();
-                    if let Err(error) = weak_view.update(cx, |view, cx| {
-                        view.selected_rows[selection_tab] = keys;
-                        cx.notify();
-                    }) {
-                        eprintln!("No se pudo actualizar la selección de la tabla: {error}");
+            let values = Rc::clone(&table.values);
+            let keys = Rc::clone(&table.keys);
+            let visible_indices = Rc::clone(&visible_indices);
+            let selected_keys = selection
+                .iter()
+                .cloned()
+                .collect::<std::collections::HashSet<_>>();
+            let row_columns = columns.to_vec();
+            let row_height = theme.table_row(densidad_tabla(self.config.tabla.altura_fila));
+            let table_width = columns.iter().map(|column| column.width).sum::<f32>() + 2.0;
+            let row_colors = theme.colors.clone();
+            let header = div()
+                .flex()
+                .items_center()
+                .h(row_height)
+                .border_b_1()
+                .border_color(theme.colors.border)
+                .child(div().w(rems(2.)).flex_none())
+                .children(columns.iter().enumerate().map(|(index, column)| {
+                    let mut label = column.title.to_owned();
+                    if let Some((sorted_column, rising)) = sort
+                        && sorted_column == index
+                    {
+                        label.push_str(if rising { " ↑" } else { " ↓" });
                     }
-                })
-                .virtualized()
+                    let header_content = if column.sortable {
+                        Button::new(format!("{table_id}-header-{}", column.key), label)
+                            .variant(ButtonVariant::Ghost)
+                            .size(ControlSize::Sm)
+                            .on_click(cx.listener(move |view, _, _, cx| {
+                                view.table_sorts[table_index] = match view.table_sorts[table_index]
+                                {
+                                    Some((known, true)) if known == index => Some((index, false)),
+                                    Some((known, false)) if known == index => None,
+                                    _ => Some((index, true)),
+                                };
+                                cx.notify();
+                            }))
+                            .into_any_element()
+                    } else {
+                        div().child(label).into_any_element()
+                    };
+                    div()
+                        .id(format!("{table_id}-header-{}", column.key))
+                        .flex()
+                        .items_center()
+                        .w(rems(column.width))
+                        .flex_none()
+                        .h(row_height)
+                        .px_2()
+                        .when(column.numeric, |header| header.justify_end())
+                        .child(header_content)
+                }));
+            let scroll_y = self.table_scroll_y[table_index].clone();
+            let scroll_y_handle = scroll_y.0.borrow().base_handle.clone();
+            let rows = uniform_list(
+                format!("{table_id}-rows"),
+                visible_indices.len(),
+                move |range, window, cx| {
+                    range
+                        .map(|visible_index| {
+                            let row_index = visible_indices[visible_index];
+                            let key = keys[row_index].clone();
+                            let row_focus = tab_stop(key.clone().into(), true, window, cx);
+                            let selected = selected_keys.contains(&key);
+                            let weak_view = weak_view.clone();
+                            let key_for_click = key.clone();
+                            let indices_for_click = Rc::clone(&visible_indices);
+                            let keys_for_click = Rc::clone(&keys);
+                            div()
+                                .id(key.clone())
+                                .track_focus(&row_focus)
+                                .flex()
+                                .items_center()
+                                .h(row_height)
+                                .border_b_1()
+                                .border_color(row_colors.border.opacity(0.35))
+                                .child(
+                                    div()
+                                        .w(rems(2.))
+                                        .flex_none()
+                                        .px_2()
+                                        .text_color(row_colors.accent)
+                                        .child(if selected { "✓" } else { "" }),
+                                )
+                                .children(row_columns.iter().enumerate().map(
+                                    |(column_index, column)| {
+                                        div()
+                                            .flex()
+                                            .items_center()
+                                            .w(rems(column.width))
+                                            .flex_none()
+                                            .px_2()
+                                            .text_ellipsis()
+                                            .when(column.numeric, |cell| cell.justify_end())
+                                            .child(values[row_index][column_index].clone())
+                                    },
+                                ))
+                                .when(selected, |row| {
+                                    row.bg(row_colors.selection)
+                                })
+                                .when(row_focus.is_focused(window), |row| {
+                                    row.border_color(row_colors.focus)
+                                })
+                                .when(!selected, |row| {
+                                    row.hover(|style| style.bg(row_colors.hover))
+                                })
+                                .on_click(move |event, _, cx| {
+                                    let modifiers = event.modifiers();
+                                    if let Err(error) =
+                                        weak_view.update(cx, |view, cx| {
+                                            let selected = &mut view.selected_rows[selection_tab];
+                                            if modifiers.shift {
+                                                let anchor_index = view.selection_anchors
+                                                    [selection_tab]
+                                                    .as_ref()
+                                                    .and_then(|anchor| {
+                                                        indices_for_click.iter().position(|index| {
+                                                            keys_for_click[*index] == *anchor
+                                                        })
+                                                    });
+                                                if let Some(anchor_index) = anchor_index {
+                                                    let clicked_index = indices_for_click
+                                                        .iter()
+                                                        .position(|index| {
+                                                            keys_for_click[*index] == key_for_click
+                                                        })
+                                                        .unwrap_or(anchor_index);
+                                                    let start = anchor_index.min(clicked_index);
+                                                    let end = anchor_index.max(clicked_index);
+                                                    *selected = indices_for_click[start..=end]
+                                                        .iter()
+                                                        .map(|index| keys_for_click[*index].clone())
+                                                        .collect();
+                                                } else {
+                                                    *selected = vec![key_for_click.clone()];
+                                                    view.selection_anchors[selection_tab] =
+                                                        Some(key_for_click.clone());
+                                                }
+                                            } else if modifiers.control || modifiers.platform {
+                                                if let Some(position) = selected
+                                                    .iter()
+                                                    .position(|known| known == &key_for_click)
+                                                {
+                                                    selected.remove(position);
+                                                } else {
+                                                    selected.push(key_for_click.clone());
+                                                }
+                                                view.selection_anchors[selection_tab] =
+                                                    Some(key_for_click.clone());
+                                            } else {
+                                                *selected = vec![key_for_click.clone()];
+                                                view.selection_anchors[selection_tab] =
+                                                    Some(key_for_click.clone());
+                                            }
+                                            cx.notify();
+                                        })
+                                    {
+                                        eprintln!("No se pudo actualizar la selección de la tabla: {error}");
+                                    }
+                                })
+                                .into_any_element()
+                        })
+                        .collect()
+                },
+            )
+            .track_scroll(&scroll_y)
+            .flex_1()
+            .min_h_0();
+            div()
+                .relative()
+                .flex_1()
                 .size_full()
+                .min_h_0()
+                .min_w_0()
+                .child(
+                    div()
+                        .id(format!("{table_id}-horizontal-scroll"))
+                        .size_full()
+                        .overflow_x_scroll()
+                        .track_scroll(&self.table_scroll_x[table_index])
+                        .child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .w(rems(table_width))
+                                .h_full()
+                                .child(header)
+                                .child(rows),
+                        ),
+                )
+                .child(Scrollbar::new(
+                    format!("{table_id}-scrollbar-x"),
+                    &self.table_scroll_x[table_index],
+                    Axis::Horizontal,
+                ))
+                .child(Scrollbar::new(
+                    format!("{table_id}-scrollbar-y"),
+                    &scroll_y_handle,
+                    Axis::Vertical,
+                ))
                 .into_any_element()
         };
         let search_field = div()
@@ -2063,45 +2263,11 @@ impl AppView {
             .flex()
             .items_center()
             .justify_end()
-            .gap_6()
             .px_3()
             .py_1()
             .text_size(rems(0.75))
             .text_color(theme.colors.fg_muted)
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .child("Columnas")
-                    .child("←")
-                    .child(
-                        div()
-                            .w(rems(3.))
-                            .h(rems(0.5))
-                            .border_t_1()
-                            .border_color(theme.colors.border),
-                    )
-                    .child("→")
-                    .child("Shift+rueda"),
-            )
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .child("Filas")
-                    .child("↑")
-                    .child(
-                        div()
-                            .w(rems(0.5))
-                            .h(rems(1.))
-                            .border_l_1()
-                            .border_color(theme.colors.border),
-                    )
-                    .child("↓")
-                    .child("Rueda"),
-            );
+            .child("Desplazamiento: barra horizontal abajo · barra vertical a la derecha");
         let footer = div()
             .flex()
             .items_center()
@@ -2130,10 +2296,8 @@ impl AppView {
                     .flex()
                     .flex_col()
                     .items_end()
-                    .text_ellipsis(                    )
-                    .child(
-                        "Ordenar: clic en encabezado · Reordenar: arrastra encabezado · Ancho: arrastra borde",
-                    )
+                    .text_ellipsis()
+                    .child("Ordenar: clic en encabezado")
                     .child("Copiar TSV: filas seleccionadas o pestaña completa"),
             );
         let panel = div()
